@@ -1,11 +1,12 @@
 /** Structured startup and configuration errors with the settings location where the operator can fix them. */
 import { fill } from './infra/text.ts'
 
-export type SetupPlace = 'deployment' | 'github' | 'feishu'
+export type SetupPlace = 'deployment' | 'github' | 'gitlab' | 'feishu'
 export const SETUP_PROBLEMS = {
   foreignFile: ['deployment', '{file} was not written by dsh-superagent; move it, or choose another state directory.'],
-  gitTooOld: ['deployment', 'git does not read the github.com credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
+  gitTooOld: ['deployment', 'git does not read the credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later.'],
   environmentFailed: ['deployment', 'Preparing the agent environment failed.'],
+  sourceUnset: ['deployment', 'No Source names a repository or project.'],
   repositoryUnset: ['github', 'The GitHub Source names no repository.'],
   agentCliUnset: ['github', 'The agent GitHub CLI is not set.'],
   agentCliMissing: ['github', 'The agent GitHub CLI was not found.'],
@@ -14,6 +15,14 @@ export const SETUP_PROBLEMS = {
   repositoryUnreadable: ['github', '@{account} cannot read {repository}.'],
   repositoryUnreported: ['github', 'The agent GitHub CLI did not return {repository}.'],
   repositoryReadOnly: ['github', '@{account} cannot push to {repository}.'],
+  gitlabUrlUnset: ['gitlab', 'The GitLab Source names no base URL.'],
+  gitlabProjectUnset: ['gitlab', 'The GitLab Source names no project.'],
+  gitlabTokenUnset: ['gitlab', 'The GitLab Source names no token file.'],
+  gitlabTokenUnreadable: ['gitlab', 'The GitLab token file {file} cannot be read.'],
+  gitlabUnreachable: ['gitlab', 'The GitLab API at {url} cannot be reached.'],
+  gitlabUnauthorized: ['gitlab', 'The GitLab token is not accepted by {url}.'],
+  gitlabProjectUnreadable: ['gitlab', '@{account} cannot read {project}.'],
+  gitlabProjectReadOnly: ['gitlab', '@{account} cannot push to {project}.'],
   feishuCliFailed: ['feishu', 'The bot lark-cli does not work.'],
   feishuNoApp: ['feishu', 'auth status of the bot lark-cli did not report the app.'],
   feishuBotNotReady: ['feishu', 'The bot identity of app {app} is {status}; configure the app secret with lark-cli.'],

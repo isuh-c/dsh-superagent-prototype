@@ -26,7 +26,27 @@ export const CODEX_REPORT_JSON_SCHEMA = {
     files_changed: { type: 'array', items: { type: 'string' } },
     checks: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['command', 'outcome'],
       properties: { command: { type: 'string' }, outcome: { type: 'string', enum: ['passed', 'failed', 'not_run'] } } } },
-    needs_human_input: { type: 'boolean' }, question: { type: ['string', 'null'] },
+    needs_human_input: { type: 'boolean', description: 'must be true exactly when status is needs_human_input and question is set' },
+    question: { type: ['string', 'null'], description: 'the one concrete question for a person; null otherwise' },
     limitations: { type: 'array', items: { type: 'string' } },
   },
 } as const
+
+/** 读取并解析 Codex 最终报告；模型可能把 JSON 包在代码围栏或少量前后文字里，这里容错提取后再严格校验。 */
+export function parseCodexReport(text: string): CodexReport {
+  const trimmed = text.trim()
+  const direct = tryParseJson(trimmed)
+  if (direct) return CodexReportSchema.parse(direct)
+  const start = trimmed.indexOf('{'), end = trimmed.lastIndexOf('}')
+  if (start >= 0 && end > start) {
+    const candidate = tryParseJson(trimmed.slice(start, end + 1))
+    if (candidate) return CodexReportSchema.parse(candidate)
+  }
+  throw new Error('The final message is not a valid structured report')
+}
+function tryParseJson(text: string): unknown {
+  try {
+    const value: unknown = JSON.parse(text)
+    return value && typeof value === 'object' ? value : undefined
+  } catch { return undefined }
+}

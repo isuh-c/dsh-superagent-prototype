@@ -1,6 +1,6 @@
 /** Plugin configuration and startup verification for repository access and agent CLI identities. */
 import { LIMITS } from './limits.ts'
-import { accessSync, constants, statSync } from 'node:fs'
+import { accessSync, constants, readFileSync, statSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { Volatile } from '@deepseek-ai/cordis'
@@ -68,13 +68,30 @@ export const GithubAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
   cli: z.string().trim().default(''),
 })
+export const GitlabAccountsSchema = z.object({
+  baseUrl: z.string().trim().regex(/^(https?:\/\/[^/]+)?$/, 'http(s)://host[:port]').default(''),
+  project: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'group/project').default(''),
+  tokenFile: z.string().trim().default(''),
+})
 export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
-export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape),
+  gitlab: Object.keys(GitlabAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
 
+export interface GithubAccount { cli: string; login: string; noreply: string }
+export interface GitlabAccount {
+  baseUrl: string
+  projectId: number
+  projectPath: string
+  tokenFile: string
+  login: string
+  email: string
+  defaultBranch: string
+}
 export interface Deployment extends Machine {
   repository: string
-  github: { cli: string; login: string; noreply: string }
+  github?: GithubAccount
+  gitlab?: GitlabAccount
   feishu?: FeishuBot
 }
 export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
@@ -106,7 +123,7 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
   return result.success ? result.data : undefined
 }
 /** Verify the agent's GitHub CLI identity and push access to the configured repository. */
-export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+export async function resolveGithub(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<{ repository: string; github: GithubAccount }> {
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
   const remote = accounts.repository
@@ -124,7 +141,68 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   if (!access) throw new SetupError('repositoryUnreported', { repository: remote })
   const repository = access.name
   if (access.push !== true) throw new SetupError('repositoryReadOnly', { account: agent.login, repository })
-  return { ...machine, repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+  return { repository, github: { cli, login: agent.login, noreply: `${agent.id}+${agent.login}@users.noreply.github.com` } }
+}
+
+const GitlabUserSchema = z.object({ id: z.number().int().positive(), username: z.string().min(1), name: z.string().optional(), bot: z.boolean().optional() })
+const GitlabProjectSchema = z.looseObject({ id: z.number().int().positive(), path_with_namespace: z.string().min(1), default_branch: z.string().nullable(),
+  permissions: z.looseObject({ project_access: z.looseObject({ access_level: z.number() }).nullish(),
+    group_access: z.looseObject({ access_level: z.number() }).nullish() }).nullish() })
+/** Reads the Project Access Token from its file; the value never enters configuration or logs. */
+export function gitlabToken(file: string): string {
+  try {
+    const token = readFileSync(file, 'utf8').trim()
+    if (token) return token
+  } catch { /* Reported below with the file path only. */ }
+  throw new SetupError('gitlabTokenUnreadable', { file })
+}
+/** Verify a GitLab Project Access Token, its project, and its Developer-or-higher role through the REST API. */
+export async function resolveGitlab(machine: Machine, gitlab: unknown, signal?: AbortSignal): Promise<{ repository: string; gitlab: GitlabAccount }> {
+  const accounts = GitlabAccountsSchema.parse(gitlab ?? {})
+  if (!accounts.baseUrl) throw new SetupError('gitlabUrlUnset')
+  if (!accounts.project) throw new SetupError('gitlabProjectUnset')
+  if (!accounts.tokenFile) throw new SetupError('gitlabTokenUnset')
+  const baseUrl = accounts.baseUrl.replace(/\/+$/, '')
+  const token = gitlabToken(accounts.tokenFile)
+  const timeout = AbortSignal.timeout(20_000)
+  const request = async (path: string): Promise<unknown> => {
+    let response: Response
+    try { response = await fetch(`${baseUrl}/api/v4/${path}`, { headers: { 'PRIVATE-TOKEN': token }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout }) }
+    catch (error) { throw new SetupError('gitlabUnreachable', { url: baseUrl, output: reason(error) }) }
+    if (response.status === 401 || response.status === 403) throw new SetupError('gitlabUnauthorized', { url: baseUrl })
+    if (!response.ok) throw new SetupError('gitlabProjectUnreadable', { account: '', project: accounts.project, output: `HTTP ${response.status}` })
+    return response.json()
+  }
+  const user = GitlabUserSchema.safeParse(await request('user'))
+  if (!user.success) throw new SetupError('gitlabUnauthorized', { url: baseUrl })
+  const projectPath = encodeURIComponent(accounts.project)
+  const project = GitlabProjectSchema.parse(await request(`projects/${projectPath}`))
+  const access = Math.max(project.permissions?.project_access?.access_level ?? 0, project.permissions?.group_access?.access_level ?? 0)
+  if (access && access < 30) throw new SetupError('gitlabProjectReadOnly', { account: user.data.username, project: project.path_with_namespace })
+  const host = new URL(baseUrl).hostname
+  return { repository: project.path_with_namespace, gitlab: { baseUrl, projectId: project.id, projectPath: project.path_with_namespace,
+    tokenFile: accounts.tokenFile, login: user.data.username, email: `${user.data.username}@users.noreply.${host}`,
+    defaultBranch: project.default_branch ?? 'main' } }
+}
+
+/**
+ * Resolve the configured Sources' accounts: GitHub when the GitHub Source names a repository, GitLab when the GitLab
+ * Source names a project, and either one suffices. The first populated Source names `repository`.
+ */
+export async function resolveDeployment(machine: Machine, github: unknown, gitlab: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+  const gh = GithubAccountsSchema.parse(github ?? {})
+  const gl = GitlabAccountsSchema.parse(gitlab ?? {})
+  // GitHub stays the default Source; any GitLab field switches the deployment to GitLab (both may run together).
+  const wantsGitlab = !!(gl.project || gl.baseUrl || gl.tokenFile)
+  const wantsGithub = !!(gh.repository || gh.cli)
+  if (!wantsGitlab) {
+    const resolved = await resolveGithub(machine, github, probe, path)
+    return { ...machine, repository: resolved.repository, github: resolved.github }
+  }
+  const resolvedGitlab = await resolveGitlab(machine, gitlab)
+  const resolvedGithub = wantsGithub ? await resolveGithub(machine, github, probe, path) : undefined
+  const repository = resolvedGitlab.repository ?? resolvedGithub!.repository
+  return { ...machine, repository, ...(resolvedGithub ? { github: resolvedGithub.github } : {}), gitlab: resolvedGitlab.gitlab }
 }
 
 const AuthStatus = z.object({ appId: z.string().regex(/^cli_[A-Za-z0-9]+$/), brand: z.enum(['feishu', 'lark']).default('feishu'), identities: z.object({ bot: z.object({ status: z.string() }) }) })

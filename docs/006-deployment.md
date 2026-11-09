@@ -105,6 +105,12 @@ key is required. In `provider` mode, the Executor fails closed when the isolated
 never falls back to the logged-in account. Configure the Responses-compatible company profile as described in
 `docs/codex-executor-roadmap.zh-CN.md`, section 3.3.
 
+### GitLab Source
+
+The bundle also ships a GitLab Source (`./gitlab-watch`) for a project on a self-hosted GitLab. Configure it on the **GitLab** card instead of GitHub: the base URL (for example `http://10.10.250.218`), the project as `group/project`, and the absolute path of a file holding a **Project Access Token** (role Developer or higher, scopes `api` and `write_repository`). The token file must stay out of the repository and configuration; it is read for setup and for every API call.
+
+The Source polls updated Issues and merge requests, their notes and code discussions, and pipelines. Workers push with a git credential helper that reads the token file and open merge requests with the bundled `gitlab-mr` helper; the host binds a merge request whose source branch ends with `DSH_SUPERAGENT_NAME` and follows it to merge or close. Saving the card checks the token, the project and push access, then restarts dsh-superagent.
+
 After the first start, edit machine limits in **Settings → Deployment** or the DeepSeek Harness Plugin Manager. Volatile limit changes apply without restart; executor and Codex configuration changes require restart. Invalid values or unknown configuration keys prevent startup; the log identifies the key.
 
 ## Start and stop

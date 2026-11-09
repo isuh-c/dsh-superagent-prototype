@@ -51,6 +51,13 @@ export const KV = {
     branchCi: record<{ branch?: string; failures?: string[]; revision: number }>('github-branch-ci'),
     ci: family<{ fingerprint: string; revision: number }, [number: number]>('github-ci:') },
   /**
+   * GitLab Source: repository-wide read cursor and per-kind start times; default-branch pipeline state; and per-MR
+   * pipeline status with a revision counter so each reported change has a distinct Trigger ID.
+   */
+  gitlab: { since: record<{ since: string; started: Record<string, string> }>('gitlab-since'),
+    branchCi: record<{ branch?: string; failed?: boolean; revision: number }>('gitlab-branch-ci'),
+    ci: family<{ status?: string; revision: number }, [number: number]>('gitlab-ci:') },
+  /**
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.
    */

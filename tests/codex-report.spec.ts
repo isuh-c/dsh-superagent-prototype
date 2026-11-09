@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CodexReportSchema } from '../src/executor/codex-report.ts'
+import { CodexReportSchema, parseCodexReport } from '../src/executor/codex-report.ts'
 import { codexArguments } from '../src/executor/codex-exec.ts'
 
 const report = {
@@ -22,11 +22,23 @@ describe('CodexReportSchema', () => {
   })
 })
 
+describe('parseCodexReport', () => {
+  it('accepts a bare JSON report and one wrapped in a code fence with prose', () => {
+    expect(parseCodexReport(JSON.stringify(report))).toEqual(report)
+    expect(parseCodexReport('Here is the report:\n```json\n' + JSON.stringify(report) + '\n```')).toEqual(report)
+  })
+  it('still rejects a report that violates the schema', () => {
+    expect(() => parseCodexReport('{"status":"completed","summary":"x"}')).toThrow()
+  })
+})
+
 describe('codexArguments', () => {
   it('uses the cached login without requiring a profile', () => {
     const args = codexArguments({ codexAuthMode: 'login', codexProfile: 'ignored' }, '/work', '/schema', '/report')
     expect(args).not.toContain('--profile')
     expect(args).toContain('workspace-write')
+    // 网关对结构化输出约束会让模型跳过工具循环，所以不能传 --output-schema。
+    expect(args).not.toContain('--output-schema')
   })
 
   it('pins the company profile for initial and resumed provider turns', () => {

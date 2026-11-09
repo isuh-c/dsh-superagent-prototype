@@ -15,7 +15,7 @@ const MARKER = '# Written by dsh-superagent on every start; edits are lost.'
 /** Markers of files written under the project's earlier names (`dsh-tag`, `dsh-go`, `dsh-freelancer`), which `dsh-superagent` owns and replaces too. */
 const LEGACY_MARKERS = ['dsh-tag', 'dsh-go', 'dsh-freelancer'].map(name => `# Written by ${name} on every start; edits are lost.`)
 /** Commands workers need, which `blockedCommands` cannot block: the shims and git. */
-export const WORKER_COMMANDS: readonly string[] = ['gh', 'git', 'lark-cli']
+export const WORKER_COMMANDS: readonly string[] = ['gh', 'git', 'lark-cli', 'gitlab-mr']
 export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bin')
 export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
@@ -44,7 +44,7 @@ export const GIT_LOCATION: readonly string[] = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT
  */
 export function agentVariables(stateDir: string): Record<string, string | undefined> {
   return {
-    GH_TOKEN: undefined, GITHUB_TOKEN: undefined,
+    GH_TOKEN: undefined, GITHUB_TOKEN: undefined, GITLAB_TOKEN: undefined, GL_TOKEN: undefined, CI_JOB_TOKEN: undefined,
     // A worker's git finds the repository from its directory, never from the host's environment.
     ...Object.fromEntries(GIT_LOCATION.map(name => [name, undefined])),
     GIT_CONFIG_GLOBAL: workerGitConfig(stateDir), GIT_CONFIG_NOSYSTEM: '1',
@@ -76,8 +76,8 @@ async function own(file: string, text: string, mode = 0o644): Promise<void> {
  * Atomically writes worker CLI shims and the isolated git configuration file into the state directory, refusing to overwrite foreign files.
  * Each shim strips the shim directory from PATH before exec so wrapper scripts resolving `gh` or `lark-cli` by name reach the real binary.
  */
-export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
-  const { stateDir, repository, github, feishu } = deployment
+export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' | 'repository' | 'github' | 'gitlab' | 'feishu'>, blockedCommands: readonly string[]): Promise<void> {
+  const { stateDir, github, gitlab, feishu } = deployment
   const dir = workerBin(stateDir)
   await mkdir(dir, { recursive: true })
   const before = await readdir(dir)
@@ -97,22 +97,139 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
   ].join('\n')
   const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
   const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
-  await shim('gh', run(github.cli))
+  const script = async (name: string, text: string): Promise<void> => {
+    const temporary = join(dir, `.${name}.${process.pid}.tmp`)
+    await writeFile(temporary, text, { mode: 0o755 })
+    await rename(temporary, join(dir, name))
+    kept.add(name)
+  }
+  await shim('gh', github ? run(github.cli) : fail('gh is unavailable: this installation has no GitHub Source.'))
   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
+  if (gitlab) {
+    await script('gitlab-mr', gitlabMrScript(gitlab))
+    await script('gitlab-credential', gitlabCredentialScript(gitlab))
+  }
+  const fallback = github ? `use gh, which acts as ${github.login}` : gitlab ? `use gitlab-mr, which acts as ${gitlab.login}` : 'this installation has no remote Source'
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
-    await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${github.login}.`))
+    await shim(name, fail(`${name} is blocked in this installation; ${fallback}.`))
   }
   for (const name of before) if (!kept.has(name)) await unlink(join(dir, name))
-  await own(workerGitConfig(stateDir), [
-    MARKER,
+  const config = [MARKER,
     // Make git refuse to commit without an explicit identity set by the worker instead of guessing from the operator's OS user.
     '[user]', '\tuseConfigOnly = true',
-    '[credential]', '\thelper =',
-    '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(github.cli))}`,
-    '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/',
+    '[credential]', '\thelper =']
+  if (github) config.push('[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(github.cli))}`,
+    '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/')
+  if (gitlab) {
+    const { host } = new URL(gitlab.baseUrl)
+    config.push(`[credential "${gitlab.baseUrl}"]`, `\thelper = ${gitQuote(gitlabHelper(dir))}`,
+      `[url "${gitlab.baseUrl}/"]`, `\tinsteadOf = git@${host}:`, `\tinsteadOf = ssh://git@${host}/`)
+  }
+  config.push(
     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.
-    '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
-  ].join('\n') + '\n')
+    '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true')
+  await own(workerGitConfig(stateDir), config.join('\n') + '\n')
+}
+
+/** The worker git credential helper command that reads the GitLab token file for the configured host. */
+const gitlabHelper = (dir: string): string => '!' + shellQuote(join(dir, 'gitlab-credential'))
+/** The worker helper that creates, views, or merges a merge request through the GitLab REST API. */
+function gitlabMrScript(gitlab: NonNullable<Deployment['gitlab']>): string {
+  return `#!/usr/bin/env python3
+${MARKER}
+"""Create, view, or merge a merge request of the configured GitLab project."""
+import argparse, json, sys, urllib.error, urllib.parse, urllib.request
+BASE = ${JSON.stringify(gitlab.baseUrl)}
+PROJECT = ${JSON.stringify(String(gitlab.projectId))}
+TOKEN_FILE = ${JSON.stringify(gitlab.tokenFile)}
+
+def call(method, path, body=None):
+    url = BASE + '/api/v4/projects/' + urllib.parse.quote(PROJECT, safe='') + path
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(url, data=data, method=method,
+        headers={'PRIVATE-TOKEN': open(TOKEN_FILE).read().strip(), 'Content-Type': 'application/json'})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=60) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        print('gitlab-mr: HTTP %s: %s' % (error.code, error.read().decode('utf-8', 'replace')[:300]), file=sys.stderr)
+        sys.exit(1)
+    except OSError as error:
+        print('gitlab-mr: %s' % error, file=sys.stderr)
+        sys.exit(1)
+
+def main():
+    parser = argparse.ArgumentParser(prog='gitlab-mr')
+    sub = parser.add_subparsers(dest='command', required=True)
+    create = sub.add_parser('create')
+    create.add_argument('--source-branch', required=True)
+    create.add_argument('--target-branch')
+    create.add_argument('--title', required=True)
+    create.add_argument('--description', default='')
+    create.add_argument('--remove-source-branch', action='store_true')
+    issue = sub.add_parser('issue')
+    issue.add_argument('iid', type=int)
+    view = sub.add_parser('view')
+    view.add_argument('iid', type=int)
+    merge = sub.add_parser('merge')
+    merge.add_argument('iid', type=int)
+    merge.add_argument('--squash', action='store_true')
+    merge.add_argument('--sha')
+    args = parser.parse_args()
+    if args.command == 'issue':
+        issue = call('GET', '/issues/%d' % args.iid)
+        print(json.dumps({'iid': issue.get('iid'), 'title': issue.get('title'), 'description': issue.get('description'),
+            'state': issue.get('state'), 'author': (issue.get('author') or {}).get('username'),
+            'labels': issue.get('labels'), 'web_url': issue.get('web_url'),
+            'created_at': issue.get('created_at'), 'updated_at': issue.get('updated_at')}))
+        return
+    elif args.command == 'create':
+        body = {'source_branch': args.source_branch, 'title': args.title, 'description': args.description,
+                'remove_source_branch': args.remove_source_branch}
+        if args.target_branch:
+            body['target_branch'] = args.target_branch
+        merge_request = call('POST', '/merge_requests', body)
+    elif args.command == 'view':
+        merge_request = call('GET', '/merge_requests/%d' % args.iid)
+    else:
+        body = {'squash': args.squash}
+        if args.sha:
+            body['sha'] = args.sha
+        merge_request = call('PUT', '/merge_requests/%d/merge' % args.iid, body)
+    print(json.dumps({'iid': merge_request.get('iid'), 'state': merge_request.get('state'),
+        'web_url': merge_request.get('web_url'), 'detailed_merge_status': merge_request.get('detailed_merge_status')}))
+
+main()
+`
+}
+/** The worker git credential helper that answers the GitLab host with the Project Access Token. */
+function gitlabCredentialScript(gitlab: NonNullable<Deployment['gitlab']>): string {
+  return `#!/usr/bin/env python3
+${MARKER}
+"""Answer git's credential request for the configured GitLab host with the Project Access Token."""
+import sys
+HOST = ${JSON.stringify(new URL(gitlab.baseUrl).host)}
+TOKEN_FILE = ${JSON.stringify(gitlab.tokenFile)}
+
+def main():
+    action = sys.argv[1] if len(sys.argv) > 1 else 'get'
+    if action != 'get':
+        return
+    fields = {}
+    for line in sys.stdin:
+        line = line.rstrip('\\n')
+        if not line:
+            break
+        name, _, value = line.partition('=')
+        fields[name] = value
+    if fields.get('host') != HOST:
+        return
+    with open(TOKEN_FILE) as token:
+        sys.stdout.write('username=oauth2\\npassword=%s\\n' % token.read().strip())
+
+main()
+`
 }
 
 /** Applies environment overrides and prepends worker shims to `process.env.PATH`, returning a restore callback. */
@@ -134,12 +251,13 @@ export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[],
   throw new CliError(read(handle.collected.stderr).trim() || `${argv.join(' ')} ${ended}`, undefined, exitCode ?? undefined)
 }
 
-/** Verifies that worker git invocations resolve the deployment's GitHub credential helper. */
-export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
-  const { github, stateDir } = deployment
-  // `-z` separates fields with NUL and never quotes paths.
-  const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper'], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
-  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(github.cli), ''].join('\0')) throw new SetupError('gitTooOld')
+/** Verifies that worker git invocations resolve the deployment's credential helper for each configured Source. */
+export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 'gitlab' | 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
+  const { github, gitlab, stateDir } = deployment
+  const read = async (url: string): Promise<string> => (await runAsWorker(subprocess,
+    ['git', 'config', '-z', '--show-origin', '--get-all', `credential.${url}.helper`], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0').join('\0')
+  if (github && await read('https://github.com') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(github.cli), ''].join('\0')) throw new SetupError('gitTooOld')
+  if (gitlab && await read(gitlab.baseUrl) !== [`file:${workerGitConfig(stateDir)}`, gitlabHelper(workerBin(stateDir)), ''].join('\0')) throw new SetupError('gitTooOld')
 }
 
 /**

@@ -18,6 +18,7 @@ const missing = (error: unknown): boolean => error instanceof CliError && (error
 export async function sendGithub(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const { commands } = host
   const { repository, github } = commands.deployment
+  if (!github) throw new Error('The GitHub Source is not configured')
   const number = Number(message.channel.address.number)
   if (!number) throw new Error('Missing GitHub reply target')
   try {

@@ -93,9 +93,19 @@ Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) t
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `stateDir` | yes | Absolute path: the database, the lock, the command shims in `worker-bin`, the agent's git configuration and, by default, the Ticket directories in `work`. Back it up before upgrades |
+| `executorBackend` | no | `dsh` (default) or `codex-exec`. The latter runs bounded non-interactive Codex turns instead of DSH worker Sessions |
+| `codexAuthMode` | for `codex-exec` | `login` (default) reuses the normal `codex login` account; `provider` uses an isolated company profile and environment credential |
+| `codexCommand`, `codexHome` | for `codex-exec` | Codex CLI and its configuration home. In `login` mode, `codexHome` defaults to the normal `$CODEX_HOME` or `~/.codex`; in `provider` mode it defaults to `<stateDir>/codex-home` |
+| `codexProfile`, `codexApiKeyEnv` | for `provider` | Company profile name and the environment variable containing its Responses gateway key. Put `<codexProfile>.config.toml` in `codexHome`; the key value is never stored in configuration |
+| `codexTimeoutMs` | no | Maximum duration of one Codex turn; default one hour |
 | `promptMaxChars`, `admissionContextMaxPages`, `admissionContextTimeoutMs` | no | The largest saved prompt configuration, and how many Thread pages one assessment reads within what time |
 
-After the first start, edit machine limits in **Settings → Deployment** or the DeepSeek Harness Plugin Manager. Changes apply without restart. `stateDir` cannot be changed there. Invalid values or unknown configuration keys prevent startup; the log identifies the key.
+In `login` mode, run `codex login` as the OS user that starts dsh-superagent and verify it with `codex login status`; no API
+key is required. In `provider` mode, the Executor fails closed when the isolated profile or named company key is missing and
+never falls back to the logged-in account. Configure the Responses-compatible company profile as described in
+`docs/codex-executor-roadmap.zh-CN.md`, section 3.3.
+
+After the first start, edit machine limits in **Settings → Deployment** or the DeepSeek Harness Plugin Manager. Volatile limit changes apply without restart; executor and Codex configuration changes require restart. Invalid values or unknown configuration keys prevent startup; the log identifies the key.
 
 ## Start and stop
 

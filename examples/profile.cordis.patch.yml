@@ -7,6 +7,15 @@
 - id: dsh-superagent
   config:
     stateDir: <absolute path, for example /home/me/.dsh/state/superagent>
+    # Home: reuse the account authenticated by `codex login`; no API key is required.
+    # executorBackend: codex-exec
+    # codexAuthMode: login
+    # codexCommand: codex
+    # Company: instead select provider mode, export the named key, and create
+    # <stateDir>/codex-home/company-superagent.config.toml.
+    # codexAuthMode: provider
+    # codexProfile: company-superagent
+    # codexApiKeyEnv: COMPANY_OPENAI_API_KEY
 # Feishu is optional: uncomment to enable its Source, then set the bot's lark-cli on the Feishu Source.
 # - id: dsh-superagent-feishu
 #   disabled: false

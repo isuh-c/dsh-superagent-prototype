@@ -2,6 +2,7 @@
 import { LIMITS } from './limits.ts'
 import { accessSync, constants, statSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
+import { homedir } from 'node:os'
 import type { Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
@@ -14,6 +15,13 @@ const absolute = (description: string) => s.string().pattern(/^\//).description(
 /** Plugin configuration of the dsh-superagent entry. Volatile fields apply without a restart because dsh-superagent reads them on each use; changing `stateDir` remounts the plugin. */
 export const Config = s.object({
   stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.').required(),
+  executorBackend: s.string().default('dsh').description('Ticket executor: dsh or codex-exec.'),
+  codexAuthMode: s.string().default('login').description('Codex authentication: login or provider.'),
+  codexCommand: s.string().default('codex').description('Codex CLI command name or absolute path.'),
+  codexHome: s.string().default('').description('CODEX_HOME override. Login defaults to the normal user home; provider defaults below stateDir.'),
+  codexProfile: s.string().default('company-superagent').description('Company-only Codex profile name.'),
+  codexApiKeyEnv: s.string().default('COMPANY_OPENAI_API_KEY').description('Environment variable holding the company gateway key.'),
+  codexTimeoutMs: s.number().min(1000).step(1).default(3600000).description('Maximum duration of one Codex turn.'),
   promptMaxChars: s.number().min(LIMITS.promptMaxChars.min).max(LIMITS.promptMaxChars.max).step(1).default(100000)
     .description('Largest saved prompt configuration, in characters.').volatile(),
   admissionContextMaxPages: s.number().min(LIMITS.admissionContextMaxPages.min).max(LIMITS.admissionContextMaxPages.max).step(1).default(10)
@@ -24,6 +32,13 @@ export const Config = s.object({
 export type DeploymentConfig = ReturnType<typeof Config>
 export interface Machine {
   stateDir: string
+  executorBackend: 'dsh' | 'codex-exec'
+  codexAuthMode: 'login' | 'provider'
+  codexCommand: string
+  codexHome: string
+  codexProfile: string
+  codexApiKeyEnv: string
+  codexTimeoutMs: number
   promptMaxChars: Volatile<number>
   admissionContextMaxPages: Volatile<number>
   admissionContextTimeoutMs: Volatile<number>
@@ -38,8 +53,15 @@ const MOVED: Record<string, string> = {
 export function machineOf(config: DeploymentConfig): Machine {
   const unknown = Object.keys(config).filter(key => !(key in (Config.dict ?? {})))
   if (unknown.length) throw new Error(`dsh-superagent configuration has keys it does not use: ${unknown.map(key => MOVED[key] ? `${key} (now ${MOVED[key]})` : key).join(', ')}; docs/006-deployment.md lists the keys`)
-  const { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs } = config
-  return { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
+  const { stateDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs, codexCommand, codexProfile, codexApiKeyEnv, codexTimeoutMs } = config
+  const executorBackend = config.executorBackend as string, codexAuthMode = config.codexAuthMode as string
+  if (executorBackend !== 'dsh' && executorBackend !== 'codex-exec') throw new Error('executorBackend must be dsh or codex-exec')
+  if (codexAuthMode !== 'login' && codexAuthMode !== 'provider') throw new Error('codexAuthMode must be login or provider')
+  if (codexAuthMode === 'provider' && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(codexApiKeyEnv)) throw new Error('codexApiKeyEnv must be an environment variable name')
+  const codexHome = config.codexHome || (codexAuthMode === 'login' ? process.env.CODEX_HOME || join(homedir(), '.codex') : join(stateDir, 'codex-home'))
+  if (!isAbsolute(codexHome)) throw new Error('codexHome must be an absolute path')
+  return { stateDir, executorBackend, codexAuthMode, codexCommand, codexHome, codexProfile, codexApiKeyEnv, codexTimeoutMs,
+    promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs }
 }
 
 export const GithubAccountsSchema = z.object({

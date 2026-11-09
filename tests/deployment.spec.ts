@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -46,9 +46,15 @@ describe('configuration schema', () => {
     // Limits are volatile references that the loader updates in place and callers read when used.
     expect({ ...read, promptMaxChars: read.promptMaxChars.get(), admissionContextMaxPages: read.admissionContextMaxPages.get(),
       admissionContextTimeoutMs: read.admissionContextTimeoutMs.get() })
-      .toEqual({ stateDir: join(dir, 'state'), promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000 })
+      .toEqual({ stateDir: join(dir, 'state'), executorBackend: 'dsh', codexAuthMode: 'login', codexCommand: 'codex',
+        codexHome: process.env.CODEX_HOME || join(homedir(), '.codex'), codexProfile: 'company-superagent',
+        codexApiKeyEnv: 'COMPANY_OPENAI_API_KEY', codexTimeoutMs: 3600000,
+        promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000 })
     expect(() => Config(minimal({ stateDir: 'relative/dir' }))).toThrow()
     expect(() => Config(minimal({ stateDir: '~/dir' }))).toThrow()
+    const provider = machineOf(Config({ stateDir: join(dir, 'state'), codexAuthMode: 'provider' }))
+    expect(provider.codexHome).toBe(join(dir, 'state', 'codex-home'))
+    expect(() => machineOf(Config({ stateDir: join(dir, 'state'), codexAuthMode: 'unknown' }))).toThrow('codexAuthMode')
   })
   it('names keys the configuration does not define, and where the values of older keys live now', () => {
     const raw = minimal({ repository: 'acme/widgets', repositoryPath: '/srv/widgets', blockedCommands: [], author: { name: 'Alice' }, extra: 1 })

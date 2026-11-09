@@ -8,7 +8,10 @@ export const reference = <T>(value: T): Volatile<T> & { set(next: T): void } => 
   return { get: () => current as never, set: next => { current = next } }
 }
 export const testMachine = (overrides: Partial<Machine> = {}): Machine => ({
-  stateDir: '/tmp/dsh-superagent-test', promptMaxChars: reference(100000), admissionContextMaxPages: reference(10),
+  stateDir: '/tmp/dsh-superagent-test', executorBackend: 'dsh', codexAuthMode: 'login', codexCommand: 'codex',
+  codexHome: '/tmp/dsh-superagent-test/codex-home', codexProfile: 'company-superagent',
+  codexApiKeyEnv: 'COMPANY_OPENAI_API_KEY', codexTimeoutMs: 3600000,
+  promptMaxChars: reference(100000), admissionContextMaxPages: reference(10),
   admissionContextTimeoutMs: reference(15000), ...overrides,
 })
 export const testDeployment = (overrides: Partial<Deployment> = {}): Deployment => ({

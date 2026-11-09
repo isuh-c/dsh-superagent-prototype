@@ -63,14 +63,22 @@ def ps(*options, check=False):
             yield int(parts[0]), parts[1], parts[2].split()
 
 
+def dsh_process(args):
+    """Return whether argv launches the dsh executable, independent of the process title Node exposes."""
+    if not args:
+        return False
+    launcher = Path(args[0]).name
+    return launcher == 'dsh' or launcher == 'node' and any(Path(word).name == 'dsh' for word in args[1:] if not word.startswith('-'))
+
+
 def running(pid, profile):
     """Return whether `pid` is currently running the DSH service for `profile` (`ps -p` returns nothing once exited)."""
-    return any(found == pid and name in ('node', 'dsh') and serves(args, profile) for found, name, args in ps('-p', str(pid)))
+    return any(found == pid and dsh_process(args) and serves(args, profile) for found, _name, args in ps('-p', str(pid)))
 
 
 def processes(profile):
     """Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and the recorded `service.pid` while still running."""
-    found = [pid for pid, name, args in ps('-ax', check=True) if name in ('node', 'dsh') and serves(args, profile)]
+    found = [pid for pid, _name, args in ps('-ax', check=True) if dsh_process(args) and serves(args, profile)]
     try:
         pid = int((control(profile) / 'service.pid').read_text())
     except (OSError, ValueError):

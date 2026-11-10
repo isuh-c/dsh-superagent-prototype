@@ -4,7 +4,9 @@ import { codexArguments } from '../src/executor/codex-exec.ts'
 
 const report = {
   status: 'completed', summary: 'Implemented the requested change.', files_changed: ['src/index.ts'],
-  checks: [{ command: 'pnpm test', outcome: 'passed' }], needs_human_input: false, question: null, limitations: [],
+  checks: [{ command: 'pnpm test', outcome: 'passed' }],
+  acceptance: [{ item: 'The requested change is implemented.', done: true, evidence: 'src/index.ts' }],
+  remaining: [], needs_human_input: false, question: null, limitations: [],
 }
 
 describe('CodexReportSchema', () => {
@@ -19,6 +21,18 @@ describe('CodexReportSchema', () => {
 
   it('rejects extra fields', () => {
     expect(CodexReportSchema.safeParse({ ...report, provider_error: 'secret response' }).success).toBe(false)
+  })
+
+  it('refuses completed when acceptance items are unfinished, missing, or work remains', () => {
+    expect(CodexReportSchema.safeParse({ ...report, acceptance: [{ item: 'x', done: false, evidence: '' }] }).success).toBe(false)
+    expect(CodexReportSchema.safeParse({ ...report, acceptance: [] }).success).toBe(false)
+    expect(CodexReportSchema.safeParse({ ...report, remaining: ['backend tests'] }).success).toBe(false)
+  })
+
+  it('accepts blocked or human-input reports that still have remaining work', () => {
+    const partial = { ...report, acceptance: [{ item: 'x', done: false, evidence: '' }], remaining: ['backend tests'] }
+    expect(CodexReportSchema.safeParse({ ...partial, status: 'blocked' }).success).toBe(true)
+    expect(CodexReportSchema.safeParse({ ...partial, status: 'needs_human_input', needs_human_input: true, question: 'Run the tests?' }).success).toBe(true)
   })
 })
 

@@ -295,7 +295,7 @@ src/executor/process.ts
 - 停止 Ticket 会停止对应 Codex 进程。
 - 服务重启不会丢失 Ticket、session ID、worktree、分支或 PR 关联。
 - 公司 provider 缺失时不回退个人 provider。
-- Codex 不能调用 Docker，不能访问其他 Ticket 的写目录。
+- Codex 默认不调用 Docker；部署显式允许时，只可运行仓库的测试脚本（如 `scripts/run-backend-tests.sh`），不得挂载宿主目录、Docker socket 或凭据；不能访问其他 Ticket 的写目录。
 - 所有相关 fake-runner 测试通过。
 
 ## 4. 最终版：Codex App Server Executor
@@ -357,7 +357,7 @@ Codex app-server
 
 - worktree 内常规读取和写入可自动允许。
 - 越出 worktree 的写入拒绝。
-- Docker 永久拒绝。
+- Docker 默认拒绝；部署显式允许时仅限仓库测试脚本，且需确认沙箱可访问 Docker socket，否则由宿主侧执行。
 - 凭据、系统目录和其他 Ticket 目录拒绝。
 - 远程写操作由宿主完成，不直接交给 Codex。
 - 无法自动决定的请求转成 GitHub 人工问题。

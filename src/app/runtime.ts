@@ -21,7 +21,7 @@ import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
-import { CodexExecExecutor } from '../executor/codex-exec.ts'
+import { CodexExecExecutor, type CodexSourceRoot } from '../executor/codex-exec.ts'
 import type { ManagedExecutor } from '../executor/port.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
@@ -128,9 +128,21 @@ export class Runtime extends Service implements SourceHost {
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
       this.settings = new Settings({ store, sources, engine: { policyChanged }, health: board, context: ctx, lifetime: this.lifetime, sessions,
         sourceHost: this, setup, requestPass: () => { this.passes.request() } })
+      // The trigger is often a comment; the Codex worker needs its thread's root (Issue/MR or PR body) so it does not miss the full request.
+      const sourceRoot = async (trigger: Trigger, signal: AbortSignal): Promise<CodexSourceRoot | undefined> => {
+        const context = sources.threadContext(trigger)
+        if (!context) return undefined
+        try {
+          const commands = this.commands.withSignal(AbortSignal.any([signal, AbortSignal.timeout(30_000)]))
+          const page = await context.read(commands, 'root', undefined)
+          const root = page.messages[0]
+          return root ? { source: trigger.source, id: root.id, from: root.from, at: root.at, text: root.text,
+            ...root.url ? { url: root.url } : {}, ...root.bot ? { bot: true } : {} } : undefined
+        } catch { return undefined }
+      }
       const executorHost = { context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
-        repliedTo: (trigger: Trigger) => repliedTo({ store, sources }, trigger) }
+        repliedTo: (trigger: Trigger) => repliedTo({ store, sources }, trigger), sourceRoot }
       this.executor = machine.executorBackend === 'codex-exec' ? new CodexExecExecutor(executorHost) : new DshExecutor(executorHost)
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),

@@ -222,8 +222,10 @@ export class CodexExecExecutor implements Executor {
   }
 
   private record(ticketId: string, value: CodexReport): void {
+    // 提问映射到 waiting 而非 blocked：blocked 会让引擎清除自动输入（note 等按可丢弃处理）并按失败态展示、
+    // 只能靠人消息或 retry 解锁；waiting + question 走引擎现成的 attention（Awaiting answer）与回答送达路径。
     const report: WorkerReport = value.status === 'completed' ? { state: 'ready', summary: value.summary, question: null }
-      : value.status === 'needs_human_input' ? { state: 'blocked', summary: value.summary, question: value.question }
+      : value.status === 'needs_human_input' ? { state: 'waiting', summary: value.summary, question: value.question }
         : { state: value.status, summary: value.summary }
     const ticket = this.host.engine.report(ticketId, report)
     const relay = reportRelay(ticket, report)
@@ -241,7 +243,7 @@ export class CodexExecExecutor implements Executor {
       request: origin?.text,
       source: origin ? { name: origin.source, url: origin.url, thread: origin.threads[0]?.id } : null,
       source_context: root ?? null,
-      mandate: ticket.mandate, instructions: this.instructions(), assignment_id: assignment.id })
+      mandate: ticket.mandate, instructions: [...this.instructions(), ...this.contextInstructions(ticket)], assignment_id: assignment.id })
   }
   private followupPrompt(ticket: Ticket, messages: string[]): string {
     return JSON.stringify({ kind: 'codex_follow_up', ticket_id: ticket.id, messages, instructions: this.instructions() })
@@ -258,4 +260,12 @@ export class CodexExecExecutor implements Executor {
     'Return the required structured report. Ask one concrete question instead of guessing when human input is required.',
     `Your final message must be exactly one JSON object matching this JSON Schema, with no prose and no code fences: ${JSON.stringify(CODEX_REPORT_JSON_SCHEMA)}`,
   ] }
+  /**
+   * 上次的提问还没人回答时，提醒 codex 不要重复提问。retry 的 resume 场景下，悬而未决的老问题会让模型
+   * 立即再报一次提问，空转一个 turn；只用于 launch 路径，follow-up 的消息本身就是回答或补充。
+   */
+  private contextInstructions(ticket: Ticket): string[] {
+    const question = ticket.attention?.question
+    return question ? [`An earlier question of yours has no answer yet: ${question}. Do not ask it again and do not report needs_human_input for it. Continue with what you can do; if nothing can proceed without the answer, report blocked.`] : []
+  }
 }
